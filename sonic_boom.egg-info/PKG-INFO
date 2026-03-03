@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: sonic-boom
+Version: 0.1.0
+Summary: A simple CLI tool to scan for speaker broadcasters and check their sync status.
+Requires-Dist: zeroconf>=0.132.0
+Requires-Dist: click>=8.1.0
+Requires-Dist: rich>=13.0.0
+Requires-Dist: pyaudio>=0.2.14

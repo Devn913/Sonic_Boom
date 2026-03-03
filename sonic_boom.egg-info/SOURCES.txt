@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+setup.py
+sonic_boom/__init__.py
+sonic_boom/cli.py
+sonic_boom/discovery.py
+sonic_boom/streamer.py
+sonic_boom.egg-info/PKG-INFO
+sonic_boom.egg-info/SOURCES.txt
+sonic_boom.egg-info/dependency_links.txt
+sonic_boom.egg-info/entry_points.txt
+sonic_boom.egg-info/requires.txt
+sonic_boom.egg-info/top_level.txt

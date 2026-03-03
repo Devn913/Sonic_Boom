@@ -1,0 +1,2 @@
+[console_scripts]
+sonic-boom = sonic_boom.cli:main
