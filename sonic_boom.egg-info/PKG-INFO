@@ -7,3 +7,5 @@ Requires-Dist: click>=8.1.0
 Requires-Dist: rich>=13.0.0
 Requires-Dist: pyaudio>=0.2.14
 Requires-Dist: numpy>=1.20.0
+Requires-Dist: pyobjc-framework-ScreenCaptureKit>=9.0
+Requires-Dist: pyobjc-framework-CoreMedia>=9.0

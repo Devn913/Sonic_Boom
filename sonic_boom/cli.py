@@ -17,38 +17,39 @@ def main():
 @click.option('--name', default='MasterNode', help='Display name of the master.')
 def master(group: str, name: str):
     """Start as an audio broadcaster (Master)."""
-    devices = AudioMaster.list_devices()
-    
-    if not devices:
-        console.print("[bold red]Error:[/bold red] No audio input devices found.")
-        return
-
-    table = Table(title="Available Audio Input Devices")
-    table.add_column("Index", style="cyan")
-    table.add_column("Name", style="magenta")
-    table.add_column("Channels", style="green")
-
-    for d in devices:
-        table.add_row(str(d['index']), d['name'], str(d['channels']))
-    
-    console.print(table)
-    
-    # Recommendation
-    blackhole = next((d for d in devices if 'BlackHole' in d['name']), None)
-    recommendation = ""
-    if blackhole:
-        recommendation = f" (Recommended for System Audio: Index {blackhole['index']})"
-    
-    device_index = click.prompt(
-        f"Select device index to broadcast{recommendation}",
-        type=int,
-        default=devices[0]['index']
+    mode = click.prompt(
+        "Choose broadcast mode",
+        type=click.Choice(['mic', 'system'], case_sensitive=False),
+        default='mic'
     )
+
+    device_index = None
+    capture_mode = "pyaudio"
+
+    if mode == 'mic':
+        devices = AudioMaster.list_devices()
+        if not devices:
+            console.print("[bold red]Error:[/bold red] No audio input devices found.")
+            return
+
+        table = Table(title="Available Audio Input Devices")
+        table.add_column("Index", style="cyan")
+        table.add_column("Name", style="magenta")
+        table.add_column("Channels", style="green")
+
+        for d in devices:
+            table.add_row(str(d['index']), d['name'], str(d['channels']))
+        
+        console.print(table)
+        device_index = click.prompt("Select device index", type=int, default=devices[0]['index'])
+    else:
+        capture_mode = "system"
+        console.print("[yellow]System audio mode requires Screen Recording permissions.[/yellow]")
 
     zc = Zeroconf()
     register_master_service(zc, name, 10000, group)
     
-    master_node = AudioMaster(group, device_index=device_index)
+    master_node = AudioMaster(group, device_index=device_index, capture_mode=capture_mode)
     try:
         master_node.start()
     finally:

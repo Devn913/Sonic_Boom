@@ -5,6 +5,7 @@ sonic_boom/__init__.py
 sonic_boom/cli.py
 sonic_boom/discovery.py
 sonic_boom/streamer.py
+sonic_boom/system_audio.py
 sonic_boom.egg-info/PKG-INFO
 sonic_boom.egg-info/SOURCES.txt
 sonic_boom.egg-info/dependency_links.txt
