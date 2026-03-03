@@ -1,6 +1,7 @@
 import objc
 import threading
 import time
+import numpy as np
 from Foundation import NSObject
 from ScreenCaptureKit import (
     SCStream, SCShareableContent, SCStreamConfiguration, 
@@ -12,10 +13,11 @@ from rich.console import Console
 console = Console()
 
 class AudioCaptureDelegate(NSObject):
-    def initWithCallback_(self, callback):
+    def initWithCallback_andRate_(self, callback, target_rate):
         self = objc.super(AudioCaptureDelegate, self).init()
         if self:
             self.callback = callback
+            self.target_rate = target_rate
         return self
 
     def stream_didOutputSampleBuffer_ofType_(self, stream, sampleBuffer, outputType):
@@ -30,22 +32,35 @@ class AudioCaptureDelegate(NSObject):
             
             if status == 0 and data:
                 try:
-                    import numpy as np
-                    # Process Float32 to Int16
-                    audio_data = np.frombuffer(data, dtype=np.float32).copy()
+                    # SCK usually outputs 48000 or 44100 Float32
+                    audio_float = np.frombuffer(data, dtype=np.float32).copy()
                     
-                    # Party Gain + Clipping
-                    gain = 8.0 
-                    audio_data = np.clip(audio_data * gain, -1.0, 1.0)
+                    # Party Gain (Optimized)
+                    gain = 12.0
+                    audio_float = np.clip(audio_float * gain, -1.0, 1.0)
                     
-                    # Interleaved Int16
-                    self.callback((audio_data * 32767).astype(np.int16).tobytes())
-                except Exception:
+                    # Resample if needed (very simple decimation for WiFi stability)
+                    # We assume SCK is 44100 and target is 22050
+                    if self.target_rate == 22050:
+                        # Take every 2nd sample (L, R, L, R) -> (L, R)
+                        # audio_float is [L, R, L, R, ...]
+                        resampled = audio_float[::2] 
+                        # Wait, slicing [::2] on interleaved stereo is WRONG.
+                        # It takes L1, L2, L3... 
+                        # Correct way:
+                        reshaped = audio_float.reshape(-1, 2)
+                        downsampled = reshaped[::2].reshape(-1)
+                        audio_float = downsampled
+
+                    # Convert to Int16
+                    self.callback((audio_float * 32767).astype(np.int16).tobytes())
+                except Exception as e:
                     pass
 
 class SystemAudioCapture:
-    def __init__(self, callback):
+    def __init__(self, callback, rate=22050):
         self.callback = callback
+        self.rate = rate
         self.stream = None
         self.running = False
         self.delegate = None
@@ -65,18 +80,17 @@ class SystemAudioCapture:
             config.setExcludesCurrentProcessAudio_(True)
             config.setWidth_(1280)
             config.setHeight_(720)
+            
+            # Request 44100 from SCK, we downsample to 22050 for the network
             config.setSampleRate_(44100)
             config.setChannelCount_(2)
             
-            self.delegate = AudioCaptureDelegate.alloc().initWithCallback_(self.callback)
+            self.delegate = AudioCaptureDelegate.alloc().initWithCallback_andRate_(self.callback, self.rate)
             self.stream = SCStream.alloc().initWithFilter_configuration_delegate_(filter, config, self.delegate)
             self.stream.addStreamOutput_type_sampleHandlerQueue_error_(self.delegate, SCStreamOutputTypeAudio, None, objc.NULL)
             
-            def start_handler(err):
-                if not err: console.print("[green]Push-mode system capture active.[/green]")
-            
             time.sleep(0.2)
-            self.stream.startCaptureWithCompletionHandler_(start_handler)
+            self.stream.startCaptureWithCompletionHandler_(lambda err: None)
 
         SCShareableContent.getShareableContentWithCompletionHandler_(completion_handler)
 
