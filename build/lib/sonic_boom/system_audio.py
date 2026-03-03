@@ -34,7 +34,15 @@ class AudioCaptureDelegate(NSObject):
             status, data = CoreMedia.CMBlockBufferCopyDataBytes(blockBuffer, 0, length, None)
             
             if status == 0 and data:
-                self.q.put(bytes(data))
+                try:
+                    import numpy as np
+                    # ScreenCaptureKit usually provides Float32. Convert to Int16.
+                    audio_float = np.frombuffer(data, dtype=np.float32)
+                    audio_int16 = (audio_float * 32767).astype(np.int16)
+                    self.q.put(audio_int16.tobytes())
+                except Exception as e:
+                    # Fallback if it's already Int16 or conversion fails
+                    self.q.put(bytes(data))
 
 class SystemAudioCapture:
     def __init__(self):
