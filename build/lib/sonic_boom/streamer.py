@@ -9,7 +9,7 @@ console = Console()
 
 # Audio Configuration
 FORMAT = pyaudio.paInt16
-CHANNELS = 1
+CHANNELS = 2 # Default to Stereo for better quality (System Audio/Spotify)
 RATE = 44100
 CHUNK = 1024
 MULTICAST_GROUP = '224.3.29.71'
@@ -42,24 +42,32 @@ class AudioMaster:
 
     def start(self):
         self.running = True
-        # If stereo device (like loopback), use 2 channels
-        channels = CHANNELS
+        input_channels = CHANNELS
         if self.device_index is not None:
             info = self.p.get_device_info_by_index(self.device_index)
-            channels = min(2, info['maxInputChannels'])
+            input_channels = info['maxInputChannels']
 
-        stream = self.p.open(format=FORMAT, channels=channels, rate=RATE, 
+        # We always broadcast CHANNELS (2) for consistency at the slave
+        stream = self.p.open(format=FORMAT, channels=input_channels, rate=RATE, 
                              input=True, input_device_index=self.device_index,
                              frames_per_buffer=CHUNK)
         
         console.print(f"[bold green]Master started.[/bold green] Broadcasting to {MULTICAST_GROUP}:{PORT} (Group: {self.group_name})")
-        console.print(f"Using device: {self.p.get_device_info_by_index(self.device_index)['name'] if self.device_index is not None else 'Default'}")
+        device_name = self.p.get_device_info_by_index(self.device_index)['name'] if self.device_index is not None else 'Default'
+        console.print(f"Using device: {device_name} ({input_channels} channels)")
         
         try:
             while self.running:
                 data = stream.read(CHUNK, exception_on_overflow=False)
-                # If we captured mono, but broadcast expects stereo (or vice versa), 
-                # for now we keep it simple, but we could handle resampling here.
+                
+                # If input is mono but we want to broadcast stereo, duplicate the channel
+                if input_channels == 1 and CHANNELS == 2:
+                    # Convert mono 16-bit to stereo 16-bit
+                    import numpy as np
+                    audio_data = np.frombuffer(data, dtype=np.int16)
+                    stereo_data = np.repeat(audio_data, 2)
+                    data = stereo_data.tobytes()
+
                 header = struct.pack("!Id", self.sequence, time.time())
                 self.sock.sendto(header + data, (MULTICAST_GROUP, PORT))
                 self.sequence += 1
