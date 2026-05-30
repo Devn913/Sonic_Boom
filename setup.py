@@ -8,6 +8,10 @@ setup(
         "zeroconf>=0.132.0",
         "click>=8.1.0",
         "rich>=13.0.0",
+        "pyaudio>=0.2.14",
+        "numpy>=1.20.0",
+        "pyobjc-framework-ScreenCaptureKit>=9.0",
+        "pyobjc-framework-CoreMedia>=9.0",
     ],
     entry_points={
         "console_scripts": [
