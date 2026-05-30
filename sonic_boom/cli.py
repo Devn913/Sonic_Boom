@@ -3,7 +3,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from .discovery import scan_speakers, register_master_service, Zeroconf
-from .streamer import AudioMaster, AudioSlave
+from .streamer import AudioMaster, AudioSlave, MULTICAST_GROUP, PORT
 
 console = Console()
 
@@ -27,9 +27,16 @@ def master(group: str, name: str):
     capture_mode = "pyaudio"
 
     if mode == 'mic':
-        devices = AudioMaster.list_devices()
+        try:
+            devices = AudioMaster.list_devices()
+        except Exception as e:
+            console.print(f"[bold red]Error:[/bold red] Failed to initialize audio system: {e}")
+            console.print("[yellow]Tip:[/yellow] Make sure PyAudio is properly installed and audio drivers are working.")
+            return
+
         if not devices:
             console.print("[bold red]Error:[/bold red] No audio input devices found.")
+            console.print("[yellow]Tip:[/yellow] Please connect a microphone or audio input device.")
             return
 
         table = Table(title="Available Audio Input Devices")
@@ -39,38 +46,67 @@ def master(group: str, name: str):
 
         for d in devices:
             table.add_row(str(d['index']), d['name'], str(d['channels']))
-        
+
         console.print(table)
         device_index = click.prompt("Select device index", type=int, default=devices[0]['index'])
+
+        # Validate device index
+        valid_indices = [d['index'] for d in devices]
+        if device_index not in valid_indices:
+            console.print(f"[bold red]Error:[/bold red] Invalid device index {device_index}.")
+            console.print(f"[yellow]Valid indices:[/yellow] {', '.join(map(str, valid_indices))}")
+            return
     else:
         capture_mode = "system"
         console.print("[yellow]System audio mode requires Screen Recording permissions.[/yellow]")
+        console.print("[yellow]On macOS: System Settings → Privacy & Security → Screen Recording[/yellow]")
 
-    zc = Zeroconf()
-    register_master_service(zc, name, 10000, group)
-    
-    master_node = AudioMaster(group, device_index=device_index, capture_mode=capture_mode)
+    console.print(f"\n[cyan]Configuration:[/cyan]")
+    console.print(f"  Group: {group}")
+    console.print(f"  Multicast: {MULTICAST_GROUP}:{PORT}")
+    console.print(f"  Mode: {mode}")
+
     try:
+        zc = Zeroconf()
+        register_master_service(zc, name, 10000, group)
+
+        master_node = AudioMaster(group, device_index=device_index, capture_mode=capture_mode)
         master_node.start()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Stopping master...[/yellow]")
+    except OSError as e:
+        console.print(f"[bold red]Network Error:[/bold red] {e}")
+        console.print("[yellow]Tip:[/yellow] Check firewall settings or network connectivity.")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        console.print("[yellow]Tip:[/yellow] If using system audio, ensure Screen Recording permissions are granted.")
     finally:
-        zc.close()
+        try:
+            zc.close()
+        except:
+            pass
 
 @main.command()
 @click.option('--timeout', default=5, help='Scanning timeout in seconds.')
 def slave(timeout: int):
     """Scan for masters and start as an audio receiver (Slave)."""
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        transient=True,
-    ) as progress:
-        progress.add_task(description="Scanning for Sonic Boom Masters...", total=None)
-        speakers = scan_speakers(timeout)
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+        ) as progress:
+            progress.add_task(description="Scanning for Sonic Boom Masters...", total=None)
+            speakers = scan_speakers(timeout)
+    except Exception as e:
+        console.print(f"[bold red]Discovery Error:[/bold red] {e}")
+        console.print("[yellow]Tip:[/yellow] Check network connectivity and firewall settings.")
+        return
 
     masters = [s for s in speakers if s.get('service_type') == 'sonic-boom-master']
 
-    multicast_group = '224.3.29.71' # Default
-    port = 10000 # Default
+    multicast_group = MULTICAST_GROUP  # Default
+    port = PORT  # Default
 
     if masters:
         table = Table(title="Available Sonic Boom Masters")
@@ -81,9 +117,9 @@ def slave(timeout: int):
 
         for i, m in enumerate(masters):
             table.add_row(str(i), m['name'], m['group_id'], f"{m['address']}:{m['port']}")
-        
+
         console.print(table)
-        
+
         choice = click.prompt(
             "Select master index to connect to (or 'm' for manual)",
             default='0'
@@ -92,32 +128,47 @@ def slave(timeout: int):
         if choice != 'm':
             try:
                 selected_master = masters[int(choice)]
-                # In a real multicast setup, the group IP is usually fixed 
-                # or derived from the service info. For now we use the default
-                # but we could read it from properties if we stored it there.
                 console.print(f"[green]Connecting to {selected_master['name']}...[/green]")
             except (ValueError, IndexError):
                 console.print("[red]Invalid selection, using defaults.[/red]")
     else:
         console.print("[yellow]No Sonic Boom Masters found. Proceeding with default multicast group.[/yellow]")
 
-    slave_node = AudioSlave(multicast_group=multicast_group, port=port)
-    slave_node.start()
+    console.print(f"\n[cyan]Configuration:[/cyan]")
+    console.print(f"  Multicast: {multicast_group}:{port}")
+
+    try:
+        slave_node = AudioSlave(multicast_group=multicast_group, port=port)
+        slave_node.start()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Stopping slave...[/yellow]")
+    except OSError as e:
+        console.print(f"[bold red]Network Error:[/bold red] {e}")
+        console.print("[yellow]Tip:[/yellow] Multicast may not be supported on this network. Check router/firewall settings.")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        console.print("[yellow]Tip:[/yellow] Make sure PyAudio is installed and audio output devices are available.")
 
 @main.command()
 @click.option('--timeout', default=5, help='Scanning timeout in seconds.')
 def scan(timeout: int):
     """Scan for local network speaker broadcasters."""
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        transient=True,
-    ) as progress:
-        progress.add_task(description="Scanning for speakers...", total=None)
-        speakers = scan_speakers(timeout)
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+        ) as progress:
+            progress.add_task(description="Scanning for speakers...", total=None)
+            speakers = scan_speakers(timeout)
+    except Exception as e:
+        console.print(f"[bold red]Discovery Error:[/bold red] {e}")
+        console.print("[yellow]Tip:[/yellow] Check network connectivity and ensure mDNS/Zeroconf is available.")
+        return
 
     if not speakers:
         console.print("[yellow]No speaker broadcasters found.[/yellow]")
+        console.print("[yellow]Tip:[/yellow] Make sure devices are on the same network and mDNS/Bonjour is enabled.")
         return
 
     # Filter out duplicates (often mDNS returns multiple for the same device)

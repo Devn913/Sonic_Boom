@@ -62,39 +62,61 @@ class AudioMaster:
 
     def start(self):
         self.running = True
-        
+
         if self.capture_mode == "system":
-            self.system_capture = SystemAudioCapture(callback=self._on_audio_data, rate=RATE)
-            self.system_capture.start()
-            console.print(f"[bold green]Master started (System).[/bold green] Broadcasting @ {RATE}Hz")
-            
-            from PyObjCTools import AppHelper
-            try: AppHelper.runConsoleEventLoop()
-            except KeyboardInterrupt: self.stop()
+            try:
+                self.system_capture = SystemAudioCapture(callback=self._on_audio_data, rate=RATE)
+                self.system_capture.start()
+                console.print(f"[bold green]Master started (System).[/bold green] Broadcasting @ {RATE}Hz to {MULTICAST_GROUP}:{PORT}")
+
+                from PyObjCTools import AppHelper
+                try:
+                    AppHelper.runConsoleEventLoop()
+                except KeyboardInterrupt:
+                    self.stop()
+            except ImportError as e:
+                console.print(f"[bold red]Error:[/bold red] macOS system audio capture not available: {e}")
+                console.print("[yellow]Tip:[/yellow] Install pyobjc frameworks: pip install pyobjc-framework-ScreenCaptureKit pyobjc-framework-CoreMedia")
+                raise
+            except Exception as e:
+                console.print(f"[bold red]Error:[/bold red] System audio capture failed: {e}")
+                console.print("[yellow]Tip:[/yellow] Grant Screen Recording permission in System Settings → Privacy & Security → Screen Recording")
+                raise
         else:
-            input_channels = CHANNELS
-            if self.device_index is not None:
-                info = self.p.get_device_info_by_index(self.device_index)
-                input_channels = info['maxInputChannels']
+            try:
+                input_channels = CHANNELS
+                if self.device_index is not None:
+                    info = self.p.get_device_info_by_index(self.device_index)
+                    input_channels = info['maxInputChannels']
 
-            def mic_callback(in_data, frame_count, time_info, status):
-                # Standardize to stereo if needed
-                if input_channels == 1:
-                    audio = np.frombuffer(in_data, dtype=np.int16)
-                    stereo = np.repeat(audio, 2)
-                    in_data = stereo.tobytes()
-                self._on_audio_data(in_data)
-                return (None, pyaudio.paContinue)
+                def mic_callback(in_data, frame_count, time_info, status):
+                    if status:
+                        console.print(f"[yellow]Audio Status Warning:[/yellow] {status}")
+                    # Standardize to stereo if needed
+                    if input_channels == 1:
+                        audio = np.frombuffer(in_data, dtype=np.int16)
+                        stereo = np.repeat(audio, 2)
+                        in_data = stereo.tobytes()
+                    self._on_audio_data(in_data)
+                    return (None, pyaudio.paContinue)
 
-            stream = self.p.open(format=FORMAT, channels=input_channels, rate=RATE, 
-                                 input=True, input_device_index=self.device_index,
-                                 frames_per_buffer=CHUNK, stream_callback=mic_callback)
-            
-            console.print(f"[bold green]Master started (Mic).[/bold green] Broadcasting @ {RATE}Hz")
-            stream.start_stream()
-            while self.running: time.sleep(0.5)
-            stream.stop_stream()
-            stream.close()
+                stream = self.p.open(format=FORMAT, channels=input_channels, rate=RATE,
+                                     input=True, input_device_index=self.device_index,
+                                     frames_per_buffer=CHUNK, stream_callback=mic_callback)
+
+                console.print(f"[bold green]Master started (Mic).[/bold green] Broadcasting @ {RATE}Hz to {MULTICAST_GROUP}:{PORT}")
+                stream.start_stream()
+                while self.running:
+                    time.sleep(0.5)
+                stream.stop_stream()
+                stream.close()
+            except OSError as e:
+                console.print(f"[bold red]Audio Device Error:[/bold red] {e}")
+                console.print("[yellow]Tip:[/yellow] Check that the audio device is connected and not in use by another application.")
+                raise
+            except Exception as e:
+                console.print(f"[bold red]Error:[/bold red] Failed to start audio capture: {e}")
+                raise
 
     def stop(self):
         self.running = False
@@ -124,52 +146,72 @@ class AudioSlave:
 
     def start(self):
         self.running = True
-        
+
         def playback_callback(in_data, frame_count, time_info, status):
+            if status:
+                console.print(f"[yellow]Playback Status Warning:[/yellow] {status}")
             try:
                 # Blocks slightly to self-pace, or returns immediately if data is ready
                 # We aim for ~400ms delay to absorb WiFi jitter
                 seq, audio_data = self.audio_buffer.get(timeout=0.05)
-                if seq <= self.last_seq: # Drop late packet
+                if seq <= self.last_seq:  # Drop late packet
                     return (b'\x00' * (frame_count * CHANNELS * 2), pyaudio.paContinue)
                 self.last_seq = seq
                 return (audio_data, pyaudio.paContinue)
-            except:
+            except queue.Empty:
                 # Under-run - return silence
                 return (b'\x00' * (frame_count * CHANNELS * 2), pyaudio.paContinue)
+            except Exception as e:
+                console.print(f"[yellow]Playback Error:[/yellow] {e}")
+                return (b'\x00' * (frame_count * CHANNELS * 2), pyaudio.paContinue)
 
-        stream = self.p.open(format=FORMAT, channels=CHANNELS, rate=RATE, 
-                             output=True, frames_per_buffer=CHUNK,
-                             stream_callback=playback_callback)
-        
-        console.print(f"[bold blue]Slave started.[/bold blue] Syncing with Master...")
-        
-        def receiver():
-            while self.running:
-                try:
-                    data_packet, addr = self.sock.recvfrom(4096)
-                    header_size = struct.calcsize("!Id")
-                    if len(data_packet) < header_size: continue
-                    header = data_packet[:header_size]
-                    audio_data = data_packet[header_size:]
-                    seq, ts = struct.unpack("!Id", header)
-                    
+        try:
+            stream = self.p.open(format=FORMAT, channels=CHANNELS, rate=RATE,
+                                 output=True, frames_per_buffer=CHUNK,
+                                 stream_callback=playback_callback)
+
+            console.print(f"[bold blue]Slave started.[/bold blue] Listening on {self.multicast_group}:{self.port}")
+            console.print("[cyan]Syncing with Master...[/cyan]")
+
+            def receiver():
+                while self.running:
                     try:
-                        self.audio_buffer.put((seq, audio_data), block=False)
-                    except queue.Full:
-                        self.audio_buffer.get_nowait()
-                        self.audio_buffer.put((seq, audio_data), block=False)
-                except: continue
+                        data_packet, addr = self.sock.recvfrom(4096)
+                        header_size = struct.calcsize("!Id")
+                        if len(data_packet) < header_size:
+                            continue
+                        header = data_packet[:header_size]
+                        audio_data = data_packet[header_size:]
+                        seq, ts = struct.unpack("!Id", header)
 
-        threading.Thread(target=receiver, daemon=True).start()
-        
-        # Buffer up before starting playback
-        time.sleep(self.latency_ms / 1000.0)
-        
-        stream.start_stream()
-        while self.running: time.sleep(0.5)
-        stream.stop_stream()
-        stream.close()
+                        try:
+                            self.audio_buffer.put((seq, audio_data), block=False)
+                        except queue.Full:
+                            self.audio_buffer.get_nowait()
+                            self.audio_buffer.put((seq, audio_data), block=False)
+                    except Exception as e:
+                        if self.running:  # Only log if still running
+                            console.print(f"[yellow]Receive Error:[/yellow] {e}")
+                        continue
+
+            threading.Thread(target=receiver, daemon=True).start()
+
+            # Buffer up before starting playback
+            time.sleep(self.latency_ms / 1000.0)
+
+            stream.start_stream()
+            console.print("[green]Playback started![/green]")
+            while self.running:
+                time.sleep(0.5)
+            stream.stop_stream()
+            stream.close()
+        except OSError as e:
+            console.print(f"[bold red]Audio Device Error:[/bold red] {e}")
+            console.print("[yellow]Tip:[/yellow] Check that audio output devices are available and working.")
+            raise
+        except Exception as e:
+            console.print(f"[bold red]Error:[/bold red] Failed to start slave: {e}")
+            raise
 
     def stop(self):
         self.running = False
