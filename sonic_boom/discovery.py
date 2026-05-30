@@ -45,23 +45,37 @@ class SpeakerListener(ServiceListener):
         }
 
 def scan_speakers(timeout: int = 5) -> List[Dict[str, Any]]:
-    zeroconf = Zeroconf()
+    """Scan for audio devices on the local network using mDNS/Zeroconf."""
+    try:
+        zeroconf = Zeroconf()
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize Zeroconf: {e}")
+
     listener = SpeakerListener()
-    
-    # Common audio service types
+
+    # Comprehensive list of audio service types
     service_types = [
-        "_googlecast._tcp.local.",
-        "_spotify-connect._tcp.local.",
-        "_airplay._tcp.local.",
-        "_sonos._tcp.local.",
-        "_sonicboom._udp.local.",
+        "_googlecast._tcp.local.",      # Google Cast devices
+        "_googlezone._tcp.local.",      # Google Home speaker groups
+        "_spotify-connect._tcp.local.", # Spotify Connect devices
+        "_airplay._tcp.local.",         # AirPlay (legacy)
+        "_raop._tcp.local.",            # AirPlay 2 (Remote Audio Output Protocol)
+        "_sonos._tcp.local.",           # Sonos speakers
+        "_sonicboom._udp.local.",       # Sonic Boom devices
     ]
-    
-    browsers = [ServiceBrowser(zeroconf, st, listener) for st in service_types]
-    
-    time.sleep(timeout)
-    zeroconf.close()
-    
+
+    try:
+        browsers = [ServiceBrowser(zeroconf, st, listener) for st in service_types]
+
+        time.sleep(timeout)
+    except Exception as e:
+        raise RuntimeError(f"Failed to scan for devices: {e}")
+    finally:
+        try:
+            zeroconf.close()
+        except:
+            pass
+
     return listener.discovered_speakers
 
 def register_master_service(zc: Zeroconf, name: str, port: int, group: str) -> ServiceInfo:
